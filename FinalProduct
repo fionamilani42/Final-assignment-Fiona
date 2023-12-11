@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<!--
+
+Copyright (c) 2023  Fiona Milani f.milani@student.maastrichtuniversity.nl
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+-->
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Import D3 visualization library -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+
+   
+
+    <style>
+        head {
+            display: flex;
+            flex-direction: column;
+        }
+
+        #search-container {
+            display: flex;
+            flex-direction: column;
+            margin: 10px;
+            background-color: pink;
+            border: 10px dashed rgba(255, 192, 203, 0.662);
+
+        }
+
+        body{
+            display: flex;
+            flex-direction: row;
+        }
+        
+        #chart-container {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            margin-top: 20px;
+        }
+
+        .chart {
+            margin-top: 20px;
+
+        }
+
+        #info-container {
+            display: block;
+            width: 400px;
+            padding: 20px;
+            margin: 10px;
+            background-color: rgba(0, 255, 255, 0.478);
+            border: 10px dashed rgba(0, 255, 255, 0.478);
+        }
+    </style>
+    
+</head>
+
+<body>
+
+    
+
+    <div id="search-container">
+        <!--Title -->
+        <h1>BubbleChart by Fiona Milani</h1>
+        <p> Contact: f.milani@student.maastrichtuniversity.nl </p>
+        <!--Search bar where you can input keywords to find AOs-->
+        <label title="Search term">Find Adverse Outcomes:</label>
+        <input type="text" id="AOsearch" placeholder="Enter a search term">
+        <button onclick="executeSPARQLQuery()">Find Outcome</button>
+    </div>
+
+    <div id="chart-container" class="chart"></div>
+
+    <div id="info-container">
+        <!--Shows the MIEs associated with a specific AO-->
+        <h2>Molecular Initiating Events (MIEs)</h2>
+        <ul id="mie-list"></ul>
+    </div>
+
+    <script>
+
+        // Press the enter key to execute the query
+        document.getElementById('AOsearch').addEventListener('keyup', function (event) {
+            if (event.key === 'Enter') {
+                executeSPARQLQuery();
+            }
+        });
+
+        // Make dataset a public variable so it can be accessed by all functions
+        let dataset;
+
+        function executeSPARQLQuery() {
+
+            // Define different parts of the HTML visualization in JS so we can access them
+            searchContainer = document.getElementById('search-container');
+            chartContainer = document.getElementById('chart-container');
+            infoContainer = document.getElementById('info-container');
+            mieList = document.getElementById('mie-list');
+
+            // The search terms inputted in the search bar are used to filter our SPARQL query
+            const AOsearch = searchContainer.querySelector('#AOsearch').value;
+
+            const sparqlEndpoint = 'https://aopwiki.rdf.bigcat-bioinformatics.org/sparql/';
+
+            const sparqlQuery = `
+                SELECT ?AOtitle ?MIEtitle (COUNT(?mie) as ?nmie) WHERE {
+                    ?aop a aopo:AdverseOutcomePathway ; aopo:has_molecular_initiating_event ?mie ; aopo:has_adverse_outcome ?ao.  
+                    ?mie a aopo:KeyEvent ; dc:title ?MIEtitle .
+                    ?ao a aopo:KeyEvent ; dc:title ?AOtitle .
+                    FILTER regex(?AOtitle, "${AOsearch}", "i")
+                }
+            `;
+            // Encode the SPARQL query into a URL 
+            const encodedQuery = encodeURIComponent(sparqlQuery);
+            const fullUrl = `${sparqlEndpoint}?query=${encodedQuery}&format=json`;
+
+
+            // Retrieve data from the SPARQL Endpoint
+            fetch(fullUrl)
+                .then(response => response.json())
+                .then(data => {
+                
+                    // Simplify access to relevant data
+                    var actualData = data.results.bindings;
+
+                    // Check if any data has been received after the query
+                    if (actualData.length === 0) {
+                        console.log('No data found for the given search term');
+                        chartContainer.innerHTML = '<p>No data found for the given search term</p>';
+                        return;
+                    }
+
+                    // Sum the counts for duplicate AO entries using a Map
+                    const aggregatedMap = new Map();
+                    actualData.forEach(d => {
+                        const key = d.AOtitle.value;
+                        const count = parseInt(d.nmie.value);
+
+                        if (aggregatedMap.has(key)) {
+                            aggregatedMap.get(key).push({ mie: d.MIEtitle.value, num: count });
+                        } else {
+                            aggregatedMap.set(key, [{ mie: d.MIEtitle.value, num: count }]);
+                        }
+                    });
+
+                    // Convert the Map back to an array
+                    const aggregatedDataset = Array.from(aggregatedMap, ([ao, mies]) => ({
+                        ao,
+                        mies,
+                        num: mies.reduce((total, mie) => total + mie.num, 0)
+                    }));
+
+                    // Assign the aggregated dataset globally
+                    dataset = aggregatedDataset;
+                    
+                    // Make the attributes of data easier to access
+                    data = {};
+                    data.children = dataset.map(function (item) {
+                        return { "AOName": item.ao, "MIEName": item.mie, "Count": item.num };
+                    });
+                    
+                    // MAKING THE BUBBLE CHART
+                    //
+                    //
+                    //
+                    // Define dimensions
+                    var width = 1100;
+                    var height = 650;
+
+                    // Define a color range 
+                    var color = d3.scaleOrdinal(d3.schemeCategory10);
+
+                    // Create the SVG object for visualization
+                    var svg = d3.select('#chart-container').append('svg')
+                        .attr('width', width)
+                        .attr('height', height)
+                        .attr('transform', 'translate(0,0)');
+
+                    // Define the bubble object
+                    var bubble = d3.pack(data)
+                        .size([width, height])
+                        .padding(5);
+                    
+                    // The size of circles is determined by the MIE count    
+                    var nodes = d3.hierarchy(data)
+                        .sum(function (d) { return d.Count; });
+
+                    // Create the bubbles
+                    var circles = svg.selectAll("g")
+                        .data(bubble(nodes).descendants())
+                        .enter()
+                        .filter(function (d) {
+                            return !d.children;
+                        })
+                        .append("g")
+                        .attr("transform", function (d) {
+                            return "translate(" + d.x + "," + d.y + ")";
+                        })
+                        .on("click", function (event, d) {
+                            if (d && d.data && d.data.AOName) {
+                                displayMIEs(d.data.AOName);
+                            }
+                        })
+                    // Append the circles' outline
+                    circles.append("circle")
+                        .attr("r", function (d) {
+                            return d.r;
+                        })
+                        .style("fill", function (d, i) {
+                            return color(i);
+                        });
+                    // Append the circles' AO name
+                    circles.append("text")
+                        .style("text-anchor", "middle")
+                        .attr("font-family", "sans-serif")
+                        .attr("font-size", function (d) {
+                            return d.r / 8;
+                        })
+                        .text(function (d) {
+                            return d.data.AOName.substring(0, d.r / 3);
+                        });
+                    // Append the circles' MIE count
+                    circles.append("text")
+                        .attr("dy", "1.3em")
+                        .style("text-anchor", "middle")
+                        .text(function (d) {
+                            return "N. of molecular initiating events: " + d.data.Count;
+                        })
+                        .attr("font-family", "sans-serif")
+                        .attr("font-size", function (d) {
+                            return d.r / 8;
+                        });
+
+                    // Append the container to a specific part of the body
+                    document.body.appendChild(chartContainer);
+
+                })
+                // Error message if an error is encountered while building the chart
+                .catch(error => {
+                    console.error('Error fetching data:', error);
+                    chartContainer.innerHTML = '<p>Error fetching data. </p>';
+                });
+
+                // End of executeSPARQLQuery function
+        }
+
+        // Retrieves all the MIEs associated with a given AO name
+        function displayMIEs(AOName) {
+
+            // Destination in the HTML page
+            const mieList = document.getElementById('mie-list');
+            mieList.innerHTML = '';
+
+            // Find all the items with the same AO name in the dataset
+            const matchingItem = dataset.find(item => item.ao === AOName);
+
+            if (matchingItem) {
+                mieList.innerHTML += `<h3>MIEs for ${AOName}:</h3>`;
+                mieList.innerHTML += '<ul>';
+
+                // Display all MIEs associated with the matching items
+                matchingItem.mies.forEach(mie => {
+                    mieList.innerHTML += `<li>${mie.mie} (Count: ${mie.num})</li>`;
+                });
+
+                mieList.innerHTML += '</ul>';
+            } else {
+                // Display message if no matching items are found
+                mieList.innerHTML = '<p>No MIEs found for the selected AO</p>';
+            }
+        }
+
+
+    </script>
+
+</body>
+
+</html>
